@@ -12,7 +12,7 @@ ScopeProof gives pentesters a real-time view of which endpoints have been tested
 - **Endpoint aggregation** — Groups requests by normalized endpoint (e.g. `/users/123` and `/users/456` become `/users/{id}`), with smart grouping for Intruder/Scanner payloads.
 - **Testing depth classification** — Automatically classifies each endpoint as Thoroughly Tested, Fuzz Tested, Manually Tested, Observed, or Untested based on which tools have interacted with it.
 - **Priority scoring** — Ranks untested or under-tested endpoints by risk (write methods, parameters, auth state, status codes).
-- **Attack payload detection** — Detects known payload categories (XSS, SQLi, Path Traversal, CMDi, SSTI, SSRF, XXE) in request content. Fully customizable — add your own payloads and categories.
+- **Attack payload detection** — Tracks payload categories (XSS, SQLi, Path Traversal, CMDi, SSTI, SSRF, XXE) by matching user-defined signatures in request content. Add your own payloads per category and ScopeProof flags which endpoints have been hit.
 - **Intruder payload generator** — Registered payload generators let you fire your custom payloads directly from Intruder.
 - **Scope filtering** — Filter by host (supports wildcards like `*.example.com`), import from Burp's target scope, or load from file.
 - **Persistent storage** — All captured data, notes, and tags survive Burp restarts. Auto-saves every 30 seconds.

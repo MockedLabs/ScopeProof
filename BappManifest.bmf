@@ -1,0 +1,13 @@
+Uuid: 66c5dfe8-5157-422a-866a-d3e809bb90c0
+ExtensionType: 1
+Name: ScopeProof
+RepoUrl: https://github.com/MockedLabs/ScopeProof
+ScreenVersion: 1.0.0
+SerialVersion: 1
+MinPlatformVersion: 0
+ProOnly: False
+Author: David Mockler
+ShortDescription: Proof-of-testing coverage tracker that summarizes which endpoints have been tested, how deeply, and what gaps remain.
+EntryPoint: build/libs/ScopeProof-1.0.0.jar
+BuildCommand: ./gradlew jar
+SupportedProducts: Pro, Community

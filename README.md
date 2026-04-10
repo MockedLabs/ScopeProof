@@ -124,4 +124,4 @@ Apache License 2.0. See [LICENSE](LICENSE).
 
 ## Author
 
-[MockedLabs](https://github.com/MockedLabs) — [scopeproof.io](https://scopeproof.io)
+[David Mockler](https://github.com/MockedLabs) — [scopeproof.io](https://scopeproof.io)

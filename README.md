@@ -4,6 +4,8 @@
 
 ScopeProof gives pentesters a real-time view of which endpoints have been tested, how deeply, and what gaps remain. It captures traffic from every Burp tool automatically and aggregates it into a single coverage dashboard — no manual bookkeeping required.
 
+![ScopeProof main tab](screenshots/scopeproof-main.png)
+
 ## Features
 
 - **Real-time traffic capture** — Automatically tracks requests from Proxy, Repeater, Intruder, Scanner, and all other Burp tools.

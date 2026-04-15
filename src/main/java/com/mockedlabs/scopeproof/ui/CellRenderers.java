@@ -119,6 +119,30 @@ public class CellRenderers {
             comp.setForeground(DEFAULT_FG);
         }
       }
+
+      // Show priority reasons as tooltip
+      if (comp instanceof JComponent) {
+        String tip = null;
+        try {
+          int modelRow = table.convertRowIndexToModel(row);
+          javax.swing.table.TableModel model = table.getModel();
+          if (model instanceof CoverageTableModel) {
+            com.mockedlabs.scopeproof.model.EndpointRow epRow =
+                ((CoverageTableModel) model).getRow(modelRow);
+            if (epRow != null && !epRow.getPriorityReasons().isEmpty()) {
+              StringBuilder sb = new StringBuilder("Score: ");
+              sb.append(epRow.getPriorityScore());
+              for (String reason : epRow.getPriorityReasons()) {
+                sb.append("  \u2022 ").append(reason);
+              }
+              tip = sb.toString();
+            }
+          }
+        } catch (Exception ignored) {
+        }
+        ((JComponent) comp).setToolTipText(tip);
+      }
+
       return comp;
     }
   }
@@ -181,6 +205,44 @@ public class CellRenderers {
 
   private static final Color BASELINE_ROW_BG = new Color(245, 245, 252);
 
+  // Auth state colors
+  private static final Color AUTH_BOTH_BG = new Color(230, 244, 234);
+  private static final Color AUTH_BOTH_FG = new Color(30, 100, 30);
+  private static final Color AUTH_ONLY_BG = new Color(254, 247, 224);
+  private static final Color AUTH_ONLY_FG = new Color(120, 100, 0);
+  private static final Color UNAUTH_ONLY_BG = new Color(252, 232, 230);
+  private static final Color UNAUTH_ONLY_FG = new Color(160, 30, 30);
+
+  public static class AuthCellRenderer extends DefaultTableCellRenderer {
+    @Override
+    public Component getTableCellRendererComponent(
+        JTable table, Object value, boolean selected, boolean focused, int row, int col) {
+      Component comp =
+          super.getTableCellRendererComponent(table, value, selected, focused, row, col);
+      if (!selected) {
+        String v = value != null ? value.toString().trim() : "";
+        switch (v) {
+          case "Both":
+            comp.setBackground(AUTH_BOTH_BG);
+            comp.setForeground(AUTH_BOTH_FG);
+            break;
+          case "Auth Only":
+            comp.setBackground(AUTH_ONLY_BG);
+            comp.setForeground(AUTH_ONLY_FG);
+            break;
+          case "Unauth Only":
+            comp.setBackground(UNAUTH_ONLY_BG);
+            comp.setForeground(UNAUTH_ONLY_FG);
+            break;
+          default:
+            comp.setBackground(Color.WHITE);
+            comp.setForeground(DEFAULT_FG);
+        }
+      }
+      return comp;
+    }
+  }
+
   public static class TestsCellRenderer extends DefaultTableCellRenderer {
     private static final Font SMALL_FONT = new Font("SansSerif", Font.PLAIN, 11);
     private static final Font SMALL_BOLD = new Font("SansSerif", Font.BOLD, 11);
@@ -213,7 +275,8 @@ public class CellRenderers {
 
   /**
    * Header renderer that delegates to the default header renderer but adds per-column tooltips.
-   * Columns 5 (Depth) gets the depth legend, columns 9/10 (Tag/Notes) get edit hints.
+   * Columns 5 (Depth) gets the depth legend, 7 (Auth) explains states, 10/11 (Tag/Notes) get edit
+   * hints.
    */
   public static class HeaderTooltipRenderer implements TableCellRenderer {
     private final TableCellRenderer delegate;
@@ -232,8 +295,15 @@ public class CellRenderers {
               + "<b>Untested</b> — In scope, no traffic<br>"
               + "<b>Missing</b> — Swagger baseline, not yet observed"
               + "</html>");
-      tooltips.put(9, "Double-click to set a tag");
-      tooltips.put(10, "Double-click to edit notes");
+      tooltips.put(
+          7,
+          "<html>"
+              + "<b>Auth</b> — Both: tested authenticated &amp; unauthenticated<br>"
+              + "<b>Auth Only</b> — only authenticated requests seen<br>"
+              + "<b>Unauth Only</b> — only unauthenticated requests seen"
+              + "</html>");
+      tooltips.put(10, "Double-click to set a tag");
+      tooltips.put(11, "Double-click to edit notes");
     }
 
     @Override

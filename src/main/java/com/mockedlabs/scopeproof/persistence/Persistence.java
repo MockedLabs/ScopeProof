@@ -72,6 +72,14 @@ public class Persistence {
 
   public boolean saveAnnotations(
       Map<String, String> notes, Map<String, String> tags, Map<String, String> exploits) {
+    return saveAnnotations(notes, tags, exploits, Collections.emptySet());
+  }
+
+  public boolean saveAnnotations(
+      Map<String, String> notes,
+      Map<String, String> tags,
+      Map<String, String> exploits,
+      Set<String> flagged) {
     try {
       ensureDir();
       Map<String, Object> data = new LinkedHashMap<>();
@@ -79,6 +87,9 @@ public class Persistence {
       data.put("notes", notes);
       data.put("tags", tags);
       data.put("exploits", exploits);
+      if (!flagged.isEmpty()) {
+        data.put("flagged", new ArrayList<>(flagged));
+      }
 
       writeAtomic(annotationsFile, gson.toJson(data));
       return true;
@@ -100,6 +111,16 @@ public class Persistence {
       Map<String, String> exploits) {
     saveRecords(records);
     saveAnnotations(notes, tags, exploits);
+  }
+
+  public void saveAll(
+      List<TrafficRecord> records,
+      Map<String, String> notes,
+      Map<String, String> tags,
+      Map<String, String> exploits,
+      Set<String> flagged) {
+    saveRecords(records);
+    saveAnnotations(notes, tags, exploits, flagged);
   }
 
   public boolean saveBaseline(List<SwaggerEndpoint> endpoints) {
@@ -157,9 +178,10 @@ public class Persistence {
     Map<String, String> notes = new HashMap<>();
     Map<String, String> tags = new HashMap<>();
     Map<String, String> exploits = new HashMap<>();
+    Set<String> flagged = new HashSet<>();
 
     if (!annotationsFile.exists()) {
-      return new Annotations(notes, tags, exploits);
+      return new Annotations(notes, tags, exploits, flagged);
     }
 
     try (Reader reader =
@@ -183,11 +205,17 @@ public class Persistence {
           exploits.put(e.getKey(), e.getValue().getAsString());
         }
       }
+      JsonArray flaggedArr = data.getAsJsonArray("flagged");
+      if (flaggedArr != null) {
+        for (JsonElement e : flaggedArr) {
+          flagged.add(e.getAsString());
+        }
+      }
     } catch (Exception e) {
       System.err.println("ScopeProof: Failed to load annotations: " + e.getMessage());
     }
 
-    return new Annotations(notes, tags, exploits);
+    return new Annotations(notes, tags, exploits, flagged);
   }
 
   public List<SwaggerEndpoint> loadBaseline() {
@@ -374,16 +402,26 @@ public class Persistence {
     private final Map<String, String> notes;
     private final Map<String, String> tags;
     private final Map<String, String> exploits;
+    private final Set<String> flagged;
 
     public Annotations(Map<String, String> notes, Map<String, String> tags) {
-      this(notes, tags, Collections.emptyMap());
+      this(notes, tags, Collections.emptyMap(), Collections.emptySet());
     }
 
     public Annotations(
         Map<String, String> notes, Map<String, String> tags, Map<String, String> exploits) {
+      this(notes, tags, exploits, Collections.emptySet());
+    }
+
+    public Annotations(
+        Map<String, String> notes,
+        Map<String, String> tags,
+        Map<String, String> exploits,
+        Set<String> flagged) {
       this.notes = notes;
       this.tags = tags;
       this.exploits = exploits;
+      this.flagged = flagged;
     }
 
     public Map<String, String> getNotes() {
@@ -396,6 +434,10 @@ public class Persistence {
 
     public Map<String, String> getExploits() {
       return exploits;
+    }
+
+    public Set<String> getFlagged() {
+      return flagged;
     }
   }
 

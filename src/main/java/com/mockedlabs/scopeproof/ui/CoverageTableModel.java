@@ -15,6 +15,7 @@ public class CoverageTableModel extends AbstractTableModel {
     "Priority",
     "Depth",
     "Tested By",
+    "Auth",
     "Status Codes",
     "Tests",
     "Tag",
@@ -53,12 +54,12 @@ public class CoverageTableModel extends AbstractTableModel {
 
   @Override
   public boolean isCellEditable(int row, int col) {
-    return col == 10; // Notes column
+    return col == 11; // Notes column
   }
 
   @Override
   public void setValueAt(Object value, int row, int col) {
-    if (col == 10 && row >= 0 && row < rows.size()) {
+    if (col == 11 && row >= 0 && row < rows.size()) {
       rows.get(row).setNotes(String.valueOf(value));
       fireTableCellUpdated(row, col);
     }
@@ -90,8 +91,18 @@ public class CoverageTableModel extends AbstractTableModel {
       case 6:
         return r.getTestedBy();
       case 7:
-        return formatStatusCodes(r.getStatusCodes());
+        {
+          List<String> auth = r.getAuthStates();
+          boolean hasAuth = auth.contains("Auth");
+          boolean hasUnauth = auth.contains("Unauth");
+          if (hasAuth && hasUnauth) return "Both";
+          if (hasAuth) return "Auth Only";
+          if (hasUnauth) return "Unauth Only";
+          return "";
+        }
       case 8:
+        return formatStatusCodes(r.getStatusCodes());
+      case 9:
         {
           List<String> tests = r.getTestsDetected();
           java.util.Set<String> confirmed = r.getExploitsConfirmed();
@@ -116,9 +127,9 @@ public class CoverageTableModel extends AbstractTableModel {
           }
           return String.join(", ", display);
         }
-      case 9:
-        return r.getTag();
       case 10:
+        return r.getTag();
+      case 11:
         return r.getNotes();
       default:
         return "";

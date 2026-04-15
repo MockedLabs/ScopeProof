@@ -33,7 +33,7 @@ public class ScopeProofTab {
   private static final String PRODUCT_NAME = "ScopeProof";
   private static final String BRAND_URL = "scopeproof.io";
   private static final String SAAS_NAME = "ScopeProof Pro";
-  public static final String VERSION = "1.0.0";
+  public static final String VERSION = "1.1.0";
   private static final String DEFAULT_UPLOAD_URL = "https://app.scopeproof.io/api/upload/";
 
   // Colors
@@ -49,21 +49,10 @@ public class ScopeProofTab {
   private static final Font FONT_CARD_VAL = new Font("SansSerif", Font.BOLD, 18);
   private static final Font FONT_CARD_LBL = new Font("SansSerif", Font.PLAIN, 10);
 
-  // Depth display constants
+  // Depth keys — used for aggregation counts
   private static final String[] DEPTH_KEYS = {
     "Thoroughly Tested", "Fuzz Tested", "Manually Tested", "Observed", "Untested"
   };
-  private static final Map<String, String> DEPTH_SHORTS;
-
-  static {
-    Map<String, String> m = new LinkedHashMap<>();
-    m.put("Thoroughly Tested", "Full");
-    m.put("Fuzz Tested", "Fuzz");
-    m.put("Manually Tested", "Manual");
-    m.put("Observed", "Obs");
-    m.put("Untested", "None");
-    DEPTH_SHORTS = Collections.unmodifiableMap(m);
-  }
 
   // Static/noise filter sets
   private static final Set<String> STATIC_EXTS =
@@ -128,6 +117,7 @@ public class ScopeProofTab {
   private Map<String, String> tagsStore = new java.util.concurrent.ConcurrentHashMap<>();
   // host|endpoint → comma-separated confirmed exploit categories
   private Map<String, String> exploitsStore = new java.util.concurrent.ConcurrentHashMap<>();
+  private static final String FLAGGED_TAG = "Flagged";
   // Index: host|endpoint → list of matching records (rebuilt on reaggregate)
   private Map<String, List<TrafficRecord>> recordIndex = new HashMap<>();
   private boolean excludeStatic = false;
@@ -159,11 +149,16 @@ public class ScopeProofTab {
   private final HttpResponseEditor responseEditor;
 
   // Summary labels
-  private JLabel lblTotal, lblHosts, lblEndpoints, lblDepth, lblCoverage;
+  private JLabel lblTotal, lblHosts, lblEndpoints, lblCoverage;
   private JLabel statusLabel;
   private JLabel reqListLabel;
   private JLabel emptyStateLabel;
   private JButton btnRefresh;
+
+  // Filter chips
+  private JPanel chipPanel;
+  private String activeChip = "All"; // currently selected chip filter
+  private final Map<String, JButton> chipButtons = new LinkedHashMap<>();
 
   // Settings fields
   private JTextField fieldTester = new JTextField("", 20);
@@ -201,6 +196,15 @@ public class ScopeProofTab {
 
     // Restore persisted data
     restoreData();
+
+    // Auto-import proxy history on first load if no data was restored
+    if (allRecords.isEmpty()) {
+      SwingUtilities.invokeLater(
+          () -> {
+            statusLabel.setText("Importing proxy history...");
+            onRefresh();
+          });
+    }
 
     // Auto-save
     autoSaver = new Persistence.AutoSaver(this::doSave, 30);
@@ -319,6 +323,30 @@ public class ScopeProofTab {
           row.setExploitsConfirmed(set);
         }
       }
+      // Create synthetic rows for "Flagged" endpoints not yet in traffic data
+      Set<String> existingKeys = new HashSet<>();
+      for (EndpointRow row : endpointRows) {
+        existingKeys.add(row.getHost() + "|" + row.getEndpoint());
+      }
+      for (Map.Entry<String, String> entry : tagsStore.entrySet()) {
+        if (!FLAGGED_TAG.equals(entry.getValue())) continue;
+        if (existingKeys.contains(entry.getKey())) continue;
+        int sep = entry.getKey().indexOf('|');
+        if (sep < 0) continue;
+        String host = entry.getKey().substring(0, sep);
+        String endpoint = entry.getKey().substring(sep + 1);
+        EndpointRow row = new EndpointRow();
+        row.setHost(host);
+        row.setEndpoint(endpoint);
+        row.setTag(FLAGGED_TAG);
+        row.setRequestCount(0);
+        row.setTestingDepth("Untested");
+        row.setPriority("High");
+        row.setPriorityScore(50);
+        row.setPriorityReasons(
+            new ArrayList<>(Arrays.asList("Manually flagged for review", "Untested")));
+        endpointRows.add(row);
+      }
     }
 
     // Merge swagger baseline — mark observed rows and inject missing ones
@@ -394,6 +422,7 @@ public class ScopeProofTab {
     }
 
     updateSummary();
+    updateChipCounts();
     applyTableFilter();
     emptyStateLabel.setVisible(endpointRows.isEmpty());
     statusLabel.setText(
@@ -505,15 +534,47 @@ public class ScopeProofTab {
     centre.setBackground(CLR_BG);
 
     // Summary cards
-    summaryPanel = new JPanel(new GridLayout(1, 5, 8, 0));
+    summaryPanel = new JPanel(new GridLayout(1, 4, 8, 0));
     summaryPanel.setBackground(CLR_BG);
     summaryPanel.setPreferredSize(new Dimension(0, 56));
     lblTotal = makeCard("Requests", "0");
     lblHosts = makeCard("Hosts", "0");
     lblEndpoints = makeCard("Endpoints", "0");
-    lblDepth = makeCard("Depth", "-");
     lblCoverage = makeCard("Coverage", "-");
-    centre.add(summaryPanel, BorderLayout.NORTH);
+
+    // Filter chips — sit between summary cards and the table
+    chipPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
+    chipPanel.setBackground(CLR_BG);
+    String[] chipNames = {
+      "All",
+      "Next Up",
+      "Untested",
+      "Missing",
+      "High Priority",
+      "Has Exploits",
+      "Auth Only",
+      "Tested"
+    };
+    for (String name : chipNames) {
+      JButton chip = new JButton(name);
+      chip.setFont(FONT_SMALL);
+      chip.setFocusPainted(false);
+      chip.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+      chip.setBorder(
+          BorderFactory.createCompoundBorder(
+              BorderFactory.createLineBorder(CLR_BORDER),
+              BorderFactory.createEmptyBorder(3, 10, 3, 10)));
+      chip.addActionListener(e -> onChipClicked(name));
+      chipButtons.put(name, chip);
+      chipPanel.add(chip);
+    }
+    styleChips(); // set initial active state
+
+    JPanel topSection = new JPanel(new BorderLayout(0, 2));
+    topSection.setBackground(CLR_BG);
+    topSection.add(summaryPanel, BorderLayout.NORTH);
+    topSection.add(chipPanel, BorderLayout.SOUTH);
+    centre.add(topSection, BorderLayout.NORTH);
 
     // Filter checkboxes (used by SettingsDialog)
     chkExcludeStatic = new JCheckBox("Hide static resources", false);
@@ -538,7 +599,9 @@ public class ScopeProofTab {
     mainTable.setGridColor(new Color(235, 237, 242));
     mainTable.setShowGrid(true);
 
-    int[] widths = {130, 220, 70, 40, 60, 90, 130, 90, 100, 70, 120};
+    //        0    1    2    3    4    5     6     7    8    9   10   11
+    // Host Endpt Meth Reqs Prio Depth TstBy Auth  SC  Tests Tag Notes
+    int[] widths = {130, 200, 65, 40, 60, 90, 120, 75, 85, 95, 65, 120};
     for (int i = 0; i < widths.length; i++) {
       mainTable.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
     }
@@ -548,11 +611,12 @@ public class ScopeProofTab {
         .getColumn(4)
         .setCellRenderer(new CellRenderers.PriorityCellRenderer());
     mainTable.getColumnModel().getColumn(5).setCellRenderer(new CellRenderers.DepthCellRenderer());
-    mainTable.getColumnModel().getColumn(8).setCellRenderer(new CellRenderers.TestsCellRenderer());
+    mainTable.getColumnModel().getColumn(7).setCellRenderer(new CellRenderers.AuthCellRenderer());
+    mainTable.getColumnModel().getColumn(9).setCellRenderer(new CellRenderers.TestsCellRenderer());
 
     // Apply baseline row tint to columns without a custom renderer
-    // Columns 2 (Methods), 4 (Priority), 5 (Depth), 8 (Tests) already have custom renderers
-    for (int c : new int[] {0, 1, 3, 6, 7, 9, 10}) {
+    // Columns 2,4,5,7,9 already have custom renderers
+    for (int c : new int[] {0, 1, 3, 6, 8, 10, 11}) {
       mainTable
           .getColumnModel()
           .getColumn(c)
@@ -574,7 +638,7 @@ public class ScopeProofTab {
             if (e.getClickCount() == 2) {
               int row = mainTable.rowAtPoint(e.getPoint());
               int col = mainTable.columnAtPoint(e.getPoint());
-              if (col == 9 && row >= 0) onTagEdit(row);
+              if (col == 10 && row >= 0) onTagEdit(row);
             }
           }
         });
@@ -900,6 +964,111 @@ public class ScopeProofTab {
         .start();
   }
 
+  // --- Filter chips ---
+
+  private void onChipClicked(String chipName) {
+    // Toggle: clicking the active chip resets to "All"
+    activeChip = activeChip.equals(chipName) && !"All".equals(chipName) ? "All" : chipName;
+    styleChips();
+    applyTableFilter();
+  }
+
+  private void styleChips() {
+    for (Map.Entry<String, JButton> entry : chipButtons.entrySet()) {
+      JButton btn = entry.getValue();
+      boolean active = entry.getKey().equals(activeChip);
+      if (active) {
+        btn.setBackground(CLR_BRAND);
+        btn.setForeground(Color.WHITE);
+        btn.setOpaque(true);
+        btn.setBorder(
+            BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(CLR_BRAND),
+                BorderFactory.createEmptyBorder(3, 10, 3, 10)));
+      } else {
+        btn.setBackground(Color.WHITE);
+        btn.setForeground(CLR_TEXT);
+        btn.setOpaque(true);
+        btn.setBorder(
+            BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(CLR_BORDER),
+                BorderFactory.createEmptyBorder(3, 10, 3, 10)));
+      }
+    }
+  }
+
+  private boolean matchesChip(EndpointRow row) {
+    switch (activeChip) {
+      case "Next Up":
+        {
+          if (FLAGGED_TAG.equals(row.getTag())) return true;
+          String d = row.getTestingDepth();
+          return row.getPriorityScore() > 20
+              && !"Thoroughly Tested".equals(d)
+              && !"Fuzz Tested".equals(d);
+        }
+      case "Untested":
+        return "Untested".equals(row.getTestingDepth()) || "Observed".equals(row.getTestingDepth());
+      case "Missing":
+        return "Missing".equals(row.getBaselineStatus());
+      case "High Priority":
+        return "Critical".equals(row.getPriority()) || "High".equals(row.getPriority());
+      case "Has Exploits":
+        return row.getExploitsConfirmed() != null && !row.getExploitsConfirmed().isEmpty();
+      case "Auth Only":
+        return row.getAuthStates().contains("Auth") && !row.getAuthStates().contains("Unauth");
+      case "Tested":
+        String d = row.getTestingDepth();
+        return "Thoroughly Tested".equals(d)
+            || "Fuzz Tested".equals(d)
+            || "Manually Tested".equals(d);
+      default:
+        return true; // "All"
+    }
+  }
+
+  /** Update chip button labels with live counts. */
+  private void updateChipCounts() {
+    Map<String, Integer> counts = new LinkedHashMap<>();
+    for (String name : chipButtons.keySet()) counts.put(name, 0);
+
+    for (EndpointRow row : endpointRows) {
+      counts.put("All", counts.get("All") + 1);
+      String depth = row.getTestingDepth();
+      if (FLAGGED_TAG.equals(row.getTag())
+          || (row.getPriorityScore() > 20
+              && !"Thoroughly Tested".equals(depth)
+              && !"Fuzz Tested".equals(depth))) {
+        counts.merge("Next Up", 1, Integer::sum);
+      }
+      if ("Untested".equals(depth) || "Observed".equals(depth)) {
+        counts.merge("Untested", 1, Integer::sum);
+      }
+      if ("Missing".equals(row.getBaselineStatus())) {
+        counts.merge("Missing", 1, Integer::sum);
+      }
+      if ("Critical".equals(row.getPriority()) || "High".equals(row.getPriority())) {
+        counts.merge("High Priority", 1, Integer::sum);
+      }
+      if (row.getExploitsConfirmed() != null && !row.getExploitsConfirmed().isEmpty()) {
+        counts.merge("Has Exploits", 1, Integer::sum);
+      }
+      if (row.getAuthStates().contains("Auth") && !row.getAuthStates().contains("Unauth")) {
+        counts.merge("Auth Only", 1, Integer::sum);
+      }
+      if ("Thoroughly Tested".equals(depth)
+          || "Fuzz Tested".equals(depth)
+          || "Manually Tested".equals(depth)) {
+        counts.merge("Tested", 1, Integer::sum);
+      }
+    }
+
+    for (Map.Entry<String, JButton> entry : chipButtons.entrySet()) {
+      int count = counts.getOrDefault(entry.getKey(), 0);
+      entry.getValue().setText(entry.getKey() + " (" + count + ")");
+    }
+  }
+
   // --- Filter / scope ---
 
   private void applyScopeFilter() {
@@ -908,27 +1077,45 @@ public class ScopeProofTab {
 
   private void applyTableFilter() {
     String query = filterField.getText().trim().toLowerCase();
-    if (query.isEmpty()) {
+    boolean hasQuery = !query.isEmpty();
+    boolean hasChip = !"All".equals(activeChip);
+
+    if (!hasQuery && !hasChip) {
       tableModel.setRows(endpointRows);
       return;
     }
+
     List<EndpointRow> filtered = new ArrayList<>();
     for (EndpointRow row : endpointRows) {
-      String searchable =
-          String.join(
-                  " ",
-                  row.getHost(),
-                  row.getEndpoint(),
-                  String.join(", ", row.getMethods()),
-                  row.getTestedBy(),
-                  row.getTestingDepth(),
-                  row.getPriority(),
-                  row.getTag(),
-                  row.getNotes(),
-                  String.join(", ", row.getTestsDetected()))
-              .toLowerCase();
-      if (searchable.contains(query)) filtered.add(row);
+      // Apply chip filter first
+      if (hasChip && !matchesChip(row)) continue;
+
+      // Then apply text search
+      if (hasQuery) {
+        String searchable =
+            String.join(
+                    " ",
+                    row.getHost(),
+                    row.getEndpoint(),
+                    String.join(", ", row.getMethods()),
+                    row.getTestedBy(),
+                    row.getTestingDepth(),
+                    row.getPriority(),
+                    row.getTag(),
+                    row.getNotes(),
+                    String.join(", ", row.getTestsDetected()))
+                .toLowerCase();
+        if (!searchable.contains(query)) continue;
+      }
+
+      filtered.add(row);
     }
+
+    // "Next Up" sorts by priority score descending — highest priority first
+    if ("Next Up".equals(activeChip)) {
+      filtered.sort((a, b) -> Integer.compare(b.getPriorityScore(), a.getPriorityScore()));
+    }
+
     tableModel.setRows(filtered);
   }
 
@@ -988,14 +1175,6 @@ public class ScopeProofTab {
     for (EndpointRow row : endpointRows) {
       depthCounts.merge(row.getTestingDepth(), 1, Integer::sum);
     }
-
-    List<String> parts = new ArrayList<>();
-    for (Map.Entry<String, Integer> e : depthCounts.entrySet()) {
-      if (e.getValue() > 0) {
-        parts.add(DEPTH_SHORTS.getOrDefault(e.getKey(), e.getKey()) + ":" + e.getValue());
-      }
-    }
-    lblDepth.setText(parts.isEmpty() ? "-" : String.join(" ", parts));
 
     // Coverage card — shows baseline coverage when swagger baseline is loaded
     if (!swaggerBaseline.isEmpty()) {
@@ -1259,7 +1438,6 @@ public class ScopeProofTab {
     lblTotal.setText("0");
     lblHosts.setText("0");
     lblEndpoints.setText("0");
-    lblDepth.setText("-");
     reqListModel.clear();
     reqListLabel.setText("Select an endpoint to view requests");
     requestEditor.setRequest(HttpRequest.httpRequest(""));
@@ -1339,6 +1517,46 @@ public class ScopeProofTab {
                 "Exploit confirmed: " + category + " on " + host + normalizedEndpoint);
           });
     }
+  }
+
+  /** Manually flag an endpoint for review. Appears in Next Up via the "Flagged" tag. */
+  public void flagForReview(String host, String normalizedEndpoint) {
+    String key = host + "|" + normalizedEndpoint;
+    SwingUtilities.invokeLater(
+        () -> {
+          // Set tag directly on the row — avoids persistNotesAndTags() overwrite
+          boolean found = false;
+          synchronized (endpointLock) {
+            for (EndpointRow row : endpointRows) {
+              if (key.equals(row.getHost() + "|" + row.getEndpoint())) {
+                row.setTag(FLAGGED_TAG);
+                found = true;
+                break;
+              }
+            }
+            if (!found) {
+              // Create synthetic row for endpoints not yet in traffic
+              EndpointRow row = new EndpointRow();
+              row.setHost(host);
+              row.setEndpoint(normalizedEndpoint);
+              row.setTag(FLAGGED_TAG);
+              row.setRequestCount(0);
+              row.setTestingDepth("Untested");
+              row.setPriority("High");
+              row.setPriorityScore(50);
+              row.setPriorityReasons(
+                  new ArrayList<>(Arrays.asList("Manually flagged for review", "Untested")));
+              endpointRows.add(row);
+            }
+          }
+          tagsStore.put(key, FLAGGED_TAG);
+          autoSaver.markDirty();
+          updateChipCounts();
+          activeChip = "Next Up";
+          styleChips();
+          applyTableFilter();
+          statusLabel.setText("\u2691 Flagged for review: " + host + normalizedEndpoint);
+        });
   }
 
   // --- ScopeProof Pro integration ---

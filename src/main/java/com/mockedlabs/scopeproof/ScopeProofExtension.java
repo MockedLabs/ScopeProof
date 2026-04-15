@@ -176,6 +176,39 @@ public class ScopeProofExtension implements BurpExtension {
                     });
                 items.add(markDecoder);
 
+                // Flag for Review
+                JMenuItem flagReview = new JMenuItem("Flag for Review (ScopeProof)");
+                flagReview.addActionListener(
+                    e -> {
+                      List<HttpRequestResponse> msgs =
+                          new java.util.ArrayList<>(event.selectedRequestResponses());
+                      if (msgs.isEmpty() && event.messageEditorRequestResponse().isPresent()) {
+                        msgs.add(event.messageEditorRequestResponse().get().requestResponse());
+                      }
+                      for (HttpRequestResponse msg : msgs) {
+                        if (msg == null || msg.request() == null) continue;
+                        try {
+                          String host = msg.request().httpService().host();
+                          String rawUrl = msg.request().url();
+                          String path = "/";
+                          try {
+                            java.net.URI parsed = new java.net.URI(rawUrl);
+                            path = parsed.getPath();
+                            if (path == null || path.isEmpty()) path = "/";
+                          } catch (Exception ex2) {
+                            int qi = rawUrl.indexOf('?');
+                            path = qi >= 0 ? rawUrl.substring(0, qi) : rawUrl;
+                          }
+                          String normalized =
+                              com.mockedlabs.scopeproof.parser.PathNormalizer.normalizePath(path);
+                          tab.flagForReview(host, normalized);
+                        } catch (Exception ex) {
+                          api.logging().logToError(NAME + " flag review error: " + ex.getMessage());
+                        }
+                      }
+                    });
+                items.add(flagReview);
+
                 // --- separator: testing vs. reporting ---
                 items.add(new JSeparator());
 
@@ -183,10 +216,21 @@ public class ScopeProofExtension implements BurpExtension {
                 JMenuItem reportFinding = new JMenuItem("Report Finding (ScopeProof Pro)");
                 reportFinding.addActionListener(
                     e -> {
+                      HttpRequestResponse evidence = null;
+                      // Try selected request/responses first (history list)
                       List<HttpRequestResponse> selected = event.selectedRequestResponses();
                       if (!selected.isEmpty()) {
-                        // Use the first selected request as evidence
-                        tab.reportFindingToPro(selected.get(0));
+                        evidence = selected.get(0);
+                      }
+                      // Fallback: try the message editor (request/response pane)
+                      if (evidence == null) {
+                        var editorMsg = event.messageEditorRequestResponse();
+                        if (editorMsg.isPresent()) {
+                          evidence = editorMsg.get().requestResponse();
+                        }
+                      }
+                      if (evidence != null) {
+                        tab.reportFindingToPro(evidence);
                       }
                     });
                 items.add(reportFinding);

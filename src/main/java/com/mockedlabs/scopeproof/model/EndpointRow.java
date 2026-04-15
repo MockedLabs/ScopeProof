@@ -28,6 +28,8 @@ public class EndpointRow {
   private String tag = "";
   private String baselineStatus = ""; // "", "Covered", "Missing", "Partial"
   private Set<String> exploitsConfirmed = new HashSet<>(); // categories where payload worked
+  private int priorityScore; // 0-100 smart score
+  private List<String> priorityReasons = new ArrayList<>(); // why this score
 
   // --- Getters and setters ---
 
@@ -181,5 +183,21 @@ public class EndpointRow {
 
   public void setExploitsConfirmed(Set<String> exploitsConfirmed) {
     this.exploitsConfirmed = exploitsConfirmed;
+  }
+
+  public int getPriorityScore() {
+    return priorityScore;
+  }
+
+  public void setPriorityScore(int priorityScore) {
+    this.priorityScore = priorityScore;
+  }
+
+  public List<String> getPriorityReasons() {
+    return priorityReasons;
+  }
+
+  public void setPriorityReasons(List<String> priorityReasons) {
+    this.priorityReasons = priorityReasons;
   }
 }

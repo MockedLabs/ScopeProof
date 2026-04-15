@@ -428,9 +428,20 @@ public class TrafficParser {
       row.setToolFlags(entry.toolFlags);
       row.setTestedBy(testedBy);
       row.setTestingDepth(depth);
-      row.setPriority(
-          classifyPriority(methodsList, paramsList, authStates, entry.statusCodes, depth));
-      row.setTestsDetected(new ArrayList<>(tests));
+      List<String> testsList = new ArrayList<>(tests);
+      PriorityResult priority =
+          classifyPriority(
+              entry.endpoint,
+              methodsList,
+              paramsList,
+              authStates,
+              entry.statusCodes,
+              depth,
+              testsList);
+      row.setPriority(priority.getLabel());
+      row.setPriorityScore(priority.getScore());
+      row.setPriorityReasons(priority.getReasons());
+      row.setTestsDetected(testsList);
       row.setNotes(notesStore.getOrDefault(storeKey, ""));
       row.setTag(tagsStore.getOrDefault(storeKey, ""));
 
@@ -464,43 +475,191 @@ public class TrafficParser {
   private static final Set<String> WRITE_METHODS =
       new HashSet<>(Arrays.asList("POST", "PUT", "DELETE", "PATCH"));
 
-  private static final Map<String, Integer> DEPTH_TIERS = new HashMap<>();
+  private static final Set<String> INTERESTING_PARAMS =
+      new HashSet<>(
+          Arrays.asList(
+              "id",
+              "user_id",
+              "userid",
+              "uid",
+              "account",
+              "account_id",
+              "file",
+              "filename",
+              "path",
+              "filepath",
+              "document",
+              "redirect",
+              "redirect_url",
+              "redirect_uri",
+              "return_url",
+              "next",
+              "url",
+              "callback",
+              "token",
+              "api_key",
+              "apikey",
+              "secret",
+              "key",
+              "session",
+              "admin",
+              "role",
+              "debug",
+              "test",
+              "internal",
+              "password",
+              "passwd",
+              "pass",
+              "email",
+              "username",
+              "query",
+              "search",
+              "q",
+              "cmd",
+              "command",
+              "exec",
+              "template",
+              "page",
+              "include",
+              "src",
+              "source"));
 
-  static {
-    DEPTH_TIERS.put("Thoroughly Tested", 3);
-    DEPTH_TIERS.put("Fuzz Tested", 2);
-    DEPTH_TIERS.put("Manually Tested", 1);
-    DEPTH_TIERS.put("Observed", 0);
-    DEPTH_TIERS.put("Untested", 0);
+  /** Result of smart priority classification. */
+  public static class PriorityResult {
+    private final String label;
+    private final int score;
+    private final List<String> reasons;
+
+    public PriorityResult(String label, int score, List<String> reasons) {
+      this.label = label;
+      this.score = score;
+      this.reasons = reasons;
+    }
+
+    public String getLabel() {
+      return label;
+    }
+
+    public int getScore() {
+      return score;
+    }
+
+    public List<String> getReasons() {
+      return reasons;
+    }
   }
 
-  public static String classifyPriority(
+  public static PriorityResult classifyPriority(
+      String endpoint,
       List<String> methods,
       List<String> queryParams,
       List<String> authStates,
       Map<String, Integer> statusCodes,
-      String testingDepth) {
+      String testingDepth,
+      List<String> testsDetected) {
+
+    int score = 0;
+    List<String> reasons = new ArrayList<>();
+
+    // --- Risk signals (what makes this endpoint interesting) ---
+
+    // Write methods
     boolean hasWrite = methods.stream().anyMatch(WRITE_METHODS::contains);
-    boolean hasParams = !queryParams.isEmpty();
-    boolean hasAuth = authStates.contains("Auth");
-    boolean hasAuthzCodes = statusCodes.containsKey("401") || statusCodes.containsKey("403");
+    if (hasWrite) {
+      score += 15;
+      List<String> writeMethods = new ArrayList<>();
+      for (String m : methods) {
+        if (WRITE_METHODS.contains(m)) writeMethods.add(m);
+      }
+      reasons.add("Write methods: " + String.join(", ", writeMethods));
+    }
 
-    int risk = 0;
-    if (hasWrite) risk += 3;
-    if (hasParams) risk += 2;
-    if (hasAuth) risk += 1;
-    if (hasAuthzCodes) risk += 1;
-    if (queryParams.size() >= 3) risk += 1;
+    // Path parameters (e.g. /api/users/{id}/profile)
+    if (endpoint.contains("{")) {
+      score += 15;
+      reasons.add("Path parameters (IDOR target)");
+    }
 
-    int tier = risk >= 5 ? 2 : (risk >= 3 ? 1 : 0);
+    // Interesting query parameter names
+    List<String> interestingFound = new ArrayList<>();
+    for (String p : queryParams) {
+      if (INTERESTING_PARAMS.contains(p.toLowerCase())) {
+        interestingFound.add(p);
+      }
+    }
+    if (!interestingFound.isEmpty()) {
+      score += 10 + Math.min(interestingFound.size() * 3, 10);
+      reasons.add("Sensitive params: " + String.join(", ", interestingFound));
+    } else if (queryParams.size() >= 3) {
+      score += 8;
+      reasons.add(queryParams.size() + " parameters (large attack surface)");
+    } else if (!queryParams.isEmpty()) {
+      score += 4;
+    }
 
-    int depth = DEPTH_TIERS.getOrDefault(testingDepth, 0);
+    // Auth-only (never tested unauthenticated)
+    boolean authOnly = authStates.contains("Auth") && !authStates.contains("Unauth");
+    if (authOnly) {
+      score += 12;
+      reasons.add("Auth only — needs unauth test");
+    }
 
-    int gap = tier - depth;
-    if (gap >= 2) return "Critical";
-    if (gap == 1) return "High";
-    if (gap == 0 && tier >= 1) return "Medium";
-    return "Low";
+    // 401/403 seen (auth boundary)
+    if (statusCodes.containsKey("401") || statusCodes.containsKey("403")) {
+      score += 8;
+      reasons.add("Auth boundary (401/403 seen)");
+    }
+
+    // 500 seen (error handling issue)
+    if (statusCodes.containsKey("500")) {
+      score += 6;
+      reasons.add("Server errors (500 seen)");
+    }
+
+    // --- Coverage gap signals (how much testing is missing) ---
+
+    // Depth penalty — less testing = higher priority
+    switch (testingDepth) {
+      case "Untested":
+        score += 20;
+        reasons.add("Untested");
+        break;
+      case "Missing":
+        score += 25;
+        reasons.add("Missing from traffic (Swagger baseline)");
+        break;
+      case "Observed":
+        score += 15;
+        reasons.add("Only observed — no manual testing");
+        break;
+      case "Manually Tested":
+        score += 5;
+        break;
+      case "Fuzz Tested":
+        score += 2;
+        break;
+      case "Thoroughly Tested":
+        // No penalty
+        break;
+    }
+
+    // No attack payloads detected on a non-trivial endpoint
+    if (testsDetected.isEmpty() && hasWrite && score > 0) {
+      score += 10;
+      reasons.add("No payloads tested");
+    }
+
+    // Cap at 100
+    score = Math.min(score, 100);
+
+    // Derive label from score
+    String label;
+    if (score >= 70) label = "Critical";
+    else if (score >= 45) label = "High";
+    else if (score >= 25) label = "Medium";
+    else label = "Low";
+
+    return new PriorityResult(label, score, reasons);
   }
 
   // --- Helpers ---

@@ -1,5 +1,6 @@
 plugins {
     java
+    id("com.diffplug.spotless") version "7.0.2"
 }
 
 group = "com.mockedlabs"
@@ -17,6 +18,15 @@ dependencies {
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
+}
+
+spotless {
+    java {
+        googleJavaFormat("1.19.2")
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
 }
 
 tasks.jar {

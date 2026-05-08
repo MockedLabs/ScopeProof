@@ -64,15 +64,19 @@ public class AttackDetector {
 
   /**
    * Detect user-defined payloads in request content. Returns {category: AttackPattern} for each
-   * category matched.
+   * category matched. Skips categories with no payloads and short-circuits on first match per
+   * category.
    */
   public synchronized Map<String, AttackPattern> detect(String requestStr) {
     Map<String, AttackPattern> results = new LinkedHashMap<>();
-    if (requestStr == null || requestStr.isEmpty()) return results;
+    if (requestStr == null || requestStr.length() < 2) return results;
 
     for (Map.Entry<String, Set<String>> entry : payloads.entrySet()) {
+      Set<String> categoryPayloads = entry.getValue();
+      if (categoryPayloads.isEmpty()) continue;
       String cat = entry.getKey();
-      for (String payload : entry.getValue()) {
+      for (String payload : categoryPayloads) {
+        if (payload.length() > requestStr.length()) continue;
         int pos = requestStr.indexOf(payload);
         if (pos >= 0) {
           results.put(cat, new AttackPattern(payload, pos));
@@ -177,7 +181,7 @@ public class AttackDetector {
         }
       }
     } catch (Exception e) {
-      System.err.println("ScopeProof: Failed to load payloads: " + e.getMessage());
+      System.err.println("[ScopeProof] Failed to load payloads: " + e.getMessage());
     }
   }
 

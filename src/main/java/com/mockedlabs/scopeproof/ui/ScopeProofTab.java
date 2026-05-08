@@ -108,7 +108,8 @@ public class ScopeProofTab {
   private final AttackDetector attackDetector;
   private final Persistence persistence;
 
-  // Data
+  // Data — capped to prevent unbounded memory growth during long engagements
+  private static final int MAX_RECORDS = 50_000;
   private final List<TrafficRecord> allRecords = new CopyOnWriteArrayList<>();
   private TrafficParser.Summary summary = new TrafficParser.Summary();
   private final Object endpointLock = new Object();
@@ -136,8 +137,9 @@ public class ScopeProofTab {
   // Auto-save
   private final Persistence.AutoSaver autoSaver;
 
-  // Debounce timer for live traffic updates (500ms coalesce window)
+  // Debounce timer for live traffic updates (500ms coalesce window, 2s max-wait)
   private final javax.swing.Timer debounceTimer;
+  private final javax.swing.Timer maxWaitTimer;
 
   // UI components
   private final JPanel mainPanel;
@@ -176,7 +178,7 @@ public class ScopeProofTab {
     this.api = api;
     this.attackDetector =
         new AttackDetector(new File(System.getProperty("user.home"), ".scopeproof"));
-    this.parser = new TrafficParser(attackDetector);
+    this.parser = new TrafficParser(attackDetector, msg -> api.logging().logToError(msg));
     this.persistence = new Persistence();
 
     // Table models
@@ -187,9 +189,24 @@ public class ScopeProofTab {
     requestEditor = api.userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
     responseEditor = api.userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
 
+    // Max-wait timer must be initialized first (referenced by debounce action)
+    maxWaitTimer = new javax.swing.Timer(2000, null);
+    maxWaitTimer.setRepeats(false);
     // Debounce timer: fires on EDT after 500ms of no new records
-    debounceTimer = new javax.swing.Timer(500, e -> reaggregateAndUpdate());
+    debounceTimer =
+        new javax.swing.Timer(
+            500,
+            e -> {
+              maxWaitTimer.stop();
+              reaggregateAndUpdate();
+            });
     debounceTimer.setRepeats(false);
+    // Max-wait action: force-fires the debounce to guarantee updates within 2s
+    maxWaitTimer.addActionListener(
+        e -> {
+          debounceTimer.stop();
+          reaggregateAndUpdate();
+        });
 
     // Build UI
     mainPanel = buildMainPanel();
@@ -264,13 +281,24 @@ public class ScopeProofTab {
 
   public void addLiveRecord(TrafficRecord record) {
     allRecords.add(record);
+    // FIFO eviction — drop oldest records when cap is exceeded
+    while (allRecords.size() > MAX_RECORDS) {
+      allRecords.remove(0);
+    }
     autoSaver.markDirty();
-    // Debounce: restart the 500ms timer so rapid bursts coalesce into one update
-    SwingUtilities.invokeLater(debounceTimer::restart);
+    // Debounce with max-wait: restart the 500ms timer but guaranteed to fire within 2s
+    SwingUtilities.invokeLater(
+        () -> {
+          debounceTimer.restart();
+          if (!maxWaitTimer.isRunning()) {
+            maxWaitTimer.start();
+          }
+        });
   }
 
   public void shutdown() {
     debounceTimer.stop();
+    maxWaitTimer.stop();
     autoSaver.stop();
     autoSaver.forceSave();
   }
@@ -298,16 +326,16 @@ public class ScopeProofTab {
     TrafficParser.AggregationResult result =
         TrafficParser.aggregate(filtered, notesStore, tagsStore);
     this.summary = result.getSummary();
-    synchronized (endpointLock) {
-      this.endpointRows = result.getEndpointRows();
-    }
     // Rebuild record index for fast row selection lookups
     Map<String, List<TrafficRecord>> idx = new HashMap<>();
     for (TrafficRecord rec : filtered) {
       String key = rec.getHost() + "|" + rec.getNormalizedEndpoint();
       idx.computeIfAbsent(key, k -> new ArrayList<>()).add(rec);
     }
-    this.recordIndex = idx;
+    synchronized (endpointLock) {
+      this.endpointRows = result.getEndpointRows();
+      this.recordIndex = idx;
+    }
 
     // Apply confirmed exploits from the store
     synchronized (endpointLock) {
@@ -808,8 +836,10 @@ public class ScopeProofTab {
     String endpoint = rowData.getEndpoint();
 
     String indexKey = host + "|" + endpoint;
-    List<TrafficRecord> matching =
-        new ArrayList<>(recordIndex.getOrDefault(indexKey, Collections.emptyList()));
+    List<TrafficRecord> matching;
+    synchronized (endpointLock) {
+      matching = new ArrayList<>(recordIndex.getOrDefault(indexKey, Collections.emptyList()));
+    }
     matching.sort(
         (a, b) -> {
           Long ta = a.getTimestamp();
@@ -1156,10 +1186,9 @@ public class ScopeProofTab {
   private static boolean isStaticResource(String path) {
     int qi = path.indexOf('?');
     String lower = (qi >= 0 ? path.substring(0, qi) : path).toLowerCase();
-    for (String ext : STATIC_EXTS) {
-      if (lower.endsWith(ext)) return true;
-    }
-    return false;
+    int dot = lower.lastIndexOf('.');
+    if (dot < 0 || dot == lower.length() - 1) return false;
+    return STATIC_EXTS.contains(lower.substring(dot));
   }
 
   // --- Summary ---
@@ -1202,14 +1231,16 @@ public class ScopeProofTab {
   // --- Persistence ---
 
   private void persistNotesAndTags() {
-    for (EndpointRow row : endpointRows) {
-      String key = row.getHost() + "|" + row.getEndpoint();
-      String note = row.getNotes();
-      String tag = row.getTag();
-      if (note != null && !note.isEmpty()) notesStore.put(key, note);
-      else notesStore.remove(key);
-      if (tag != null && !tag.isEmpty()) tagsStore.put(key, tag);
-      else tagsStore.remove(key);
+    synchronized (endpointLock) {
+      for (EndpointRow row : endpointRows) {
+        String key = row.getHost() + "|" + row.getEndpoint();
+        String note = row.getNotes();
+        String tag = row.getTag();
+        if (note != null && !note.isEmpty()) notesStore.put(key, note);
+        else notesStore.remove(key);
+        if (tag != null && !tag.isEmpty()) tagsStore.put(key, tag);
+        else tagsStore.remove(key);
+      }
     }
   }
 
@@ -1369,9 +1400,6 @@ public class ScopeProofTab {
       new Thread(
               () -> {
                 try {
-                  String json =
-                      new String(
-                          java.nio.file.Files.readAllBytes(tmp.toPath()), StandardCharsets.UTF_8);
                   HttpURLConnection conn =
                       (HttpURLConnection) new URI(url).toURL().openConnection();
                   conn.setRequestMethod("POST");
@@ -1381,8 +1409,14 @@ public class ScopeProofTab {
                   conn.setConnectTimeout(10000);
                   conn.setReadTimeout(15000);
 
-                  try (OutputStream out = conn.getOutputStream()) {
-                    out.write(json.getBytes(StandardCharsets.UTF_8));
+                  // Stream file directly to connection — avoids loading entire export into memory
+                  try (OutputStream out = conn.getOutputStream();
+                      InputStream in = new FileInputStream(tmp)) {
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = in.read(buf)) != -1) {
+                      out.write(buf, 0, n);
+                    }
                   }
                   int code = conn.getResponseCode();
                   conn.disconnect();

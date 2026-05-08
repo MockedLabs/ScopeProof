@@ -42,9 +42,16 @@ public class ScopeProofExtension implements BurpExtension {
     api.userInterface().registerSuiteTab(NAME, tab.getComponent());
 
     // Edited proxy detection: stores original request bytes keyed by messageId
-    // LinkedHashMap preserves insertion order for correct FIFO eviction
+    // Self-evicting LRU map — automatically removes oldest entries beyond capacity
+    final int PENDING_PROXY_CAP = 5000;
     final Map<Integer, byte[]> pendingProxy =
-        Collections.synchronizedMap(new LinkedHashMap<>(256, 0.75f, false));
+        Collections.synchronizedMap(
+            new LinkedHashMap<Integer, byte[]>(256, 0.75f, false) {
+              @Override
+              protected boolean removeEldestEntry(Map.Entry<Integer, byte[]> eldest) {
+                return size() > PENDING_PROXY_CAP;
+              }
+            });
 
     // --- HTTP handler: captures traffic from ALL tools ---
     api.http()
@@ -101,18 +108,6 @@ public class ScopeProofExtension implements BurpExtension {
                 try {
                   byte[] snapshot = request.toByteArray().getBytes();
                   pendingProxy.put(request.messageId(), snapshot);
-                  // Prevent unbounded growth — evict oldest (insertion-order)
-                  if (pendingProxy.size() > 5000) {
-                    synchronized (pendingProxy) {
-                      Iterator<Integer> it = pendingProxy.keySet().iterator();
-                      int toRemove = 1000;
-                      while (it.hasNext() && toRemove > 0) {
-                        it.next();
-                        it.remove();
-                        toRemove--;
-                      }
-                    }
-                  }
                 } catch (Exception ex) {
                   api.logging().logToError(NAME + " proxy snapshot error: " + ex.getMessage());
                 }

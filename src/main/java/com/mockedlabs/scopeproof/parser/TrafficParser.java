@@ -12,8 +12,11 @@ import burp.api.montoya.proxy.ProxyHttpRequestResponse;
 import com.mockedlabs.scopeproof.model.*;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.text.SimpleDateFormat;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.function.Consumer;
 
 /**
  * Extracts TrafficRecord from Burp HTTP messages and aggregates records into EndpointRows for
@@ -24,10 +27,19 @@ public class TrafficParser {
   // Synthetic tool type for edited proxy requests
   public static final String TOOL_EDITED_PROXY = "Edited Proxy";
 
+  private static final DateTimeFormatter TS_FORMATTER =
+      DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault());
+
   private final AttackDetector attackDetector;
+  private final Consumer<String> errorLogger;
 
   public TrafficParser(AttackDetector attackDetector) {
+    this(attackDetector, msg -> System.err.println("ScopeProof: " + msg));
+  }
+
+  public TrafficParser(AttackDetector attackDetector, Consumer<String> errorLogger) {
     this.attackDetector = attackDetector;
+    this.errorLogger = errorLogger;
   }
 
   public AttackDetector getAttackDetector() {
@@ -82,11 +94,12 @@ public class TrafficParser {
     return NAME_TO_TOOL.get(toolName);
   }
 
-  public static ToolType identifyTool(HttpResponseReceived response) {
+  public ToolType identifyTool(HttpResponseReceived response) {
     for (ToolType type : ToolType.values()) {
       try {
         if (response.toolSource().isFromTool(type)) return type;
-      } catch (Exception ignored) {
+      } catch (Exception e) {
+        errorLogger.accept("identifyTool error for " + type + ": " + e.getMessage());
       }
     }
     return null;
@@ -128,11 +141,11 @@ public class TrafficParser {
             }
           }
         } catch (Exception e) {
-          System.err.println("ScopeProof: Failed to parse proxy entry: " + e.getMessage());
+          errorLogger.accept("Failed to parse proxy entry: " + e.getMessage());
         }
       }
     } catch (Exception e) {
-      System.err.println("ScopeProof: Failed to read proxy history: " + e.getMessage());
+      errorLogger.accept("Failed to read proxy history: " + e.getMessage());
     }
 
     // Site map
@@ -153,11 +166,11 @@ public class TrafficParser {
             }
           }
         } catch (Exception e) {
-          System.err.println("ScopeProof: Failed to parse site map entry: " + e.getMessage());
+          errorLogger.accept("Failed to parse site map entry: " + e.getMessage());
         }
       }
     } catch (Exception e) {
-      System.err.println("ScopeProof: Failed to read site map: " + e.getMessage());
+      errorLogger.accept("Failed to read site map: " + e.getMessage());
     }
 
     return results;
@@ -213,7 +226,7 @@ public class TrafficParser {
           }
         }
       } catch (Exception e) {
-        System.err.println("ScopeProof: Failed to parse parameters: " + e.getMessage());
+        errorLogger.accept("Failed to parse parameters: " + e.getMessage());
       }
       Collections.sort(queryParams);
 
@@ -236,7 +249,7 @@ public class TrafficParser {
           String reqStr = new String(request.toByteArray().getBytes(), StandardCharsets.ISO_8859_1);
           attackPatterns = attackDetector.detect(reqStr);
         } catch (Exception e) {
-          System.err.println("ScopeProof: Attack detection error: " + e.getMessage());
+          errorLogger.accept("Attack detection error: " + e.getMessage());
         }
       }
 
@@ -257,7 +270,7 @@ public class TrafficParser {
             }
           }
         } catch (Exception e) {
-          System.err.println("ScopeProof: Response parse error: " + e.getMessage());
+          errorLogger.accept("Response parse error: " + e.getMessage());
         }
       }
 
@@ -667,8 +680,7 @@ public class TrafficParser {
   public static String formatTimestamp(Long epochMs) {
     if (epochMs == null) return "";
     try {
-      SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm");
-      return sdf.format(new Date(epochMs));
+      return TS_FORMATTER.format(Instant.ofEpochMilli(epochMs));
     } catch (Exception e) {
       return "";
     }
